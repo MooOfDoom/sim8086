@@ -2,9 +2,9 @@
 bits 16
 add bx, [bx + si]
 add bx, [bp]
-add ax, word 2
-add ax, word 2
-add ax, word 8
+add si, word 2
+add bp, word 2
+add cx, word 8
 add bx, [bp]
 add cx, [bx + 2]
 add bh, [bp + si + 4]
@@ -26,9 +26,9 @@ add al, -30
 add al, 9
 sub bx, [bx + si]
 sub bx, [bp]
+sub si, word 2
 sub bp, word 2
-sub bp, word 2
-sub bp, word 8
+sub cx, word 8
 sub bx, [bp]
 sub cx, [bx + 2]
 sub bh, [bp + si + 4]
@@ -50,9 +50,9 @@ sub al, -30
 sub al, 9
 cmp bx, [bx + si]
 cmp bx, [bp]
-cmp di, word 2
-cmp di, word 2
-cmp di, word 8
+cmp si, word 2
+cmp bp, word 2
+cmp cx, word 8
 cmp bx, [bp]
 cmp cx, [bx + 2]
 cmp bh, [bp + si + 4]
@@ -72,27 +72,30 @@ cmp al, ah
 cmp ax, 1000
 cmp al, -30
 cmp al, 9
-jne 2
-jne -4
-jne -6
-jne -4
-je -2
-jl -4
-jle -6
-jb -8
-jbe -10
-jp -12
-jo -14
-js -16
-jne -18
-jnl -20
-jg -22
-jnb -24
-ja -26
-jnp -28
-jno -30
-jns -32
-loop -34
-loopz -36
-loopnz -38
-jcxz -40
+label_1:
+jne label_0
+jne label_1
+label_0:
+jne label_1
+jne label_0
+label_2:
+je label_2
+jl label_2
+jle label_2
+jb label_2
+jbe label_2
+jp label_2
+jo label_2
+js label_2
+jne label_2
+jnl label_2
+jg label_2
+jnb label_2
+ja label_2
+jnp label_2
+jno label_2
+jns label_2
+loop label_2
+loopz label_2
+loopnz label_2
+jcxz label_2

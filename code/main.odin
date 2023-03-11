@@ -25,14 +25,20 @@ package sim8086
 
 import "core:fmt"
 import "core:os"
+import "core:slice"
 
 main :: proc() {
 	if len(os.args) == 2 {
 		if binary_instructions, ok := os.read_entire_file(os.args[1]); ok {
-			mnemonic_instructions, ok := disasm8086(binary_instructions)
+			mnemonic_instructions, labels, ok := disasm8086(binary_instructions)
 			fmt.printf("; %s\n", os.args[1])
 			fmt.println("bits 16")
-			for line in mnemonic_instructions {
+			label_index := 0
+			for line, index in mnemonic_instructions {
+				if label_index < len(labels) && labels[label_index].instruction_index == index {
+					fmt.printf("label_%d:\n", labels[label_index].index)
+					label_index += 1
+				}
 				fmt.println(line)
 			}
 			if !ok {
@@ -169,6 +175,43 @@ read :: proc(decoder: ^Decoder, $T: typeid) -> T {
 	return result
 }
 
+read_mod_reg_r_m :: proc(decoder: ^Decoder) -> (mod: Mod, reg: byte, r_m: byte) {
+	instruction_byte := read(decoder, byte)
+	if decoder.error {
+		return
+	}
+	mod = Mod(instruction_byte >> 6)
+	reg = (instruction_byte & 0b00111000) >> 3
+	r_m =  instruction_byte & 0b00000111
+	return
+}
+
+effective_address_calculation :: proc(decoder: ^Decoder, mod: Mod, r_m: byte) -> string {
+	disp: i16
+	direct_address := mod == .no_displacement && r_m == 0b110
+	if mod == .displacement_8 {
+		disp = i16(read(decoder, i8));
+	} else if mod == .displacement_16 || direct_address {
+		disp = read(decoder, i16);
+	}
+	if decoder.error {
+		decode_error("Missing displacement for effective address calculation\n")
+		return "?"
+	}
+	
+	result: string
+	if direct_address {
+		result = fmt.tprintf("[%d]", disp)
+	} else if mod == .no_displacement || disp == 0 {
+		result = fmt.tprintf("[%s]", effective_address_calcs[r_m])
+	} else if disp > 0 {
+		result = fmt.tprintf("[%s + %d]", effective_address_calcs[r_m], disp)
+	} else {
+		result = fmt.tprintf("[%s - %d]", effective_address_calcs[r_m], -disp)
+	}
+	return result
+}
+
 is_mov_reg_imm :: proc(opcode: byte) -> bool {
 	return opcode & 0b11110000 == 0b10110000
 }
@@ -186,7 +229,7 @@ is_mov_acc_mem :: proc(opcode: byte) -> bool {
 }
 
 is_mov_r_m_seg :: proc(opcode: byte) -> bool {
-	return opcode & 0b11111100 == 0b10001100
+	return opcode & 0b11111101 == 0b10001100
 }
 
 is_arithmetic_op_reg_r_m :: proc(opcode: byte) -> bool {
@@ -213,24 +256,24 @@ register_name :: proc(reg: byte, w: byte) -> string {
 	return reg_names[reg | (w << 3)]
 }
 
-read_mod_reg_r_m :: proc(decoder: ^Decoder) -> (mod: Mod, reg: byte, r_m: byte) {
-	instruction_byte := read(decoder, byte)
-	if decoder.error {
-		return
-	}
-	mod = Mod(instruction_byte >> 6)
-	reg = (instruction_byte & 0b00111000) >> 3
-	r_m =  instruction_byte & 0b00000111
-	return
+Label :: struct {
+	index:             int,
+	instruction_index: int,
 }
 
-disasm8086 :: proc(binary_instructions: []byte) -> (mnemonic_instructions: []string, success: bool) {
-	success = true
+disasm8086 :: proc(binary_instructions: []byte) -> (mnemonic_instructions: []string, labels: []Label, success: bool) {
 	output_buf: [dynamic]string
+	labels_buf: [dynamic]Label
 	decoder := &Decoder{binary_instructions = binary_instructions}
+	address_to_label: map[int]^Label
+	instruction_addresses: [dynamic]int
 	
 	// debug_printf("\n%s\n\n", os.args[1])
 	for !decoder.error && has_bytes(decoder) {
+		append(&instruction_addresses, decoder.index)
+		if label, ok := address_to_label[decoder.index]; ok {
+			label.instruction_index = len(output_buf)
+		}
 		opcode := read(decoder, byte)
 		// debug_printf("%08b\n", opcode)
 		d := (opcode & 0b00000010) >> 1
@@ -370,7 +413,7 @@ disasm8086 :: proc(binary_instructions: []byte) -> (mnemonic_instructions: []str
 			
 			dest: string
 			if mod == .register {
-				dest = register_name(reg, w)
+				dest = register_name(r_m, w)
 			} else {
 				dest = effective_address_calculation(decoder, mod, r_m)
 				if decoder.error {
@@ -407,26 +450,49 @@ disasm8086 :: proc(binary_instructions: []byte) -> (mnemonic_instructions: []str
 			}
 			
 			append(&output_buf, fmt.aprintf("%s %s, %d", op_names[op], register_name(AX, w), imm))
-		} else if is_conditional_jmp(opcode) {
-			type := opcode & 0b00001111
+		} else if is_conditional_jmp(opcode) || is_loop_or_jcxz(opcode) {
+			mnemonic: string
+			if is_conditional_jmp(opcode) {
+				type := opcode & 0b00001111
+				mnemonic = conditional_jmps[type]
+			} else {
+				type := opcode & 0b00000011
+				mnemonic = loops[type]
+			}
 			
 			disp := read(decoder, i8)
 			if decoder.error {
-				decode_error("Missing short label for %s\n", conditional_jmps[type])
+				decode_error("Missing short label for %s\n", mnemonic)
 				break
 			}
 			
-			append(&output_buf, fmt.aprintf("%s %d", conditional_jmps[type], disp))
-		} else if is_loop_or_jcxz(opcode) {
-			type := opcode & 0b00000011
-			
-			disp := read(decoder, i8)
-			if decoder.error {
-				decode_error("Missing short label for %s\n", loops[type])
-				break
+			target_address := decoder.index + int(disp)
+			label, ok := address_to_label[target_address]
+			if !ok {
+				append(&labels_buf, Label{
+					index             = len(labels_buf),
+					instruction_index = -1,
+				})
+				label = &labels_buf[len(labels_buf) - 1]
+				address_to_label[target_address] = label
+				if target_address < decoder.index {
+					index := len(instruction_addresses) - 1
+					address := instruction_addresses[index]
+					for index > 0 && address > target_address {
+						index -= 1
+						address = instruction_addresses[index]
+					}
+					if address != target_address {
+						decoder.error = true
+						decode_error("Cannot find location for short label for %s (disp=%d, address=%d)", mnemonic, disp, target_address)
+						break
+					}
+					
+					label.instruction_index = index
+				}
 			}
 			
-			append(&output_buf, fmt.aprintf("%s %d", loops[type], disp))
+			append(&output_buf, fmt.aprintf("%s label_%d", mnemonic, label.index))
 		} else {
 			decode_error("Unhandled instruction: %08b\n", opcode)
 			decoder.error = true
@@ -434,33 +500,11 @@ disasm8086 :: proc(binary_instructions: []byte) -> (mnemonic_instructions: []str
 		}
 	}
 	
-	success = !decoder.error
 	mnemonic_instructions = output_buf[:]
+	labels = labels_buf[:]
+	slice.sort_by(labels, proc(i, j: Label) -> bool {
+		return i.instruction_index < j.instruction_index
+	})
+	success = !decoder.error
 	return
-}
-
-effective_address_calculation :: proc(decoder: ^Decoder, mod: Mod, r_m: byte) -> string {
-	disp: i16
-	direct_address := mod == .no_displacement && r_m == 0b110
-	if mod == .displacement_8 {
-		disp = i16(read(decoder, i8));
-	} else if mod == .displacement_16 || direct_address {
-		disp = read(decoder, i16);
-	}
-	if decoder.error {
-		decode_error("Missing displacement for effective address calculation\n")
-		return "?"
-	}
-	
-	result: string
-	if direct_address {
-		result = fmt.tprintf("[%d]", disp)
-	} else if mod == .no_displacement || disp == 0 {
-		result = fmt.tprintf("[%s]", effective_address_calcs[r_m])
-	} else if disp > 0 {
-		result = fmt.tprintf("[%s + %d]", effective_address_calcs[r_m], disp)
-	} else {
-		result = fmt.tprintf("[%s - %d]", effective_address_calcs[r_m], -disp)
-	}
-	return result
 }
