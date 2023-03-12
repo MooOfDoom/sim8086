@@ -52,10 +52,6 @@ main :: proc() {
 	}
 }
 
-debug_printf :: proc(fmt_str: string, args: ..any) {
-	fmt.fprintf(os.stderr, fmt_str, ..args)
-}
-
 Mod :: enum {
 	no_displacement = 0b00,
 	displacement_8  = 0b01,
@@ -184,7 +180,7 @@ string_ops := []string {
 	"movs",
 	"cmps",
 	"",
-	"stds",
+	"stos",
 	"lods",
 	"scas",
 }
@@ -463,7 +459,7 @@ is_rep :: proc(opcode: byte) -> bool {
 	return opcode & 0b11111110 == 0b11110010
 }
 
-// MOVS, CMPS, SCAS, LODS, STDS
+// MOVS, CMPS, SCAS, LODS, STOS
 is_string_op :: proc(opcode: byte) -> bool {
 	return opcode & 0b11110000 == 0b10100000 // NOTE: Assumes MOV and TEST have been filtered out!
 }
@@ -548,11 +544,9 @@ disasm8086 :: proc(binary_instructions: []byte) -> (mnemonic_instructions: []str
 	lock    := false
 	segment := -1
 	
-	// debug_printf("\n%s\n\n", os.args[1])
 	for !decoder.error && has_bytes(decoder) {
 		update_labels(decoder, len(output_buf))
 		opcode := read(decoder, byte)
-		// debug_printf("%08b\n", opcode)
 		d := (opcode & 0b00000010) >> 1
 		w :=  opcode & 0b00000001
 		
@@ -716,7 +710,11 @@ disasm8086 :: proc(binary_instructions: []byte) -> (mnemonic_instructions: []str
 				}
 			}
 			
-			append(&output_buf, fmt.aprintf("%s %s", all_ones[type], source))
+			if type == 0b011 || type == 0b101 { // Intersegment call or jmp
+				append(&output_buf, fmt.aprintf("%s far %s", all_ones[type], source))
+			} else {
+				append(&output_buf, fmt.aprintf("%s %s", all_ones[type], source))
+			}
 		} else if is_pop_r_m(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
 			if decoder.error {

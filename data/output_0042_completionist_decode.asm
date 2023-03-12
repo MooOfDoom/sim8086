@@ -270,6 +270,8 @@ rep movsw
 rep cmpsw
 rep scasw
 rep lodsw
+rep stosb
+rep stosw
 call word [-26335]
 call word [bp - 100]
 call sp
