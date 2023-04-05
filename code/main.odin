@@ -48,7 +48,13 @@ main :: proc() {
 					index := reg_indices[i]
 					reg_name := index < FIRST_SEGMENT_REG ? reg_names[index + 8] : seg_names[index - FIRST_SEGMENT_REG]
 					value := sim.registers[index].value
-					if value != 0 do fmt.printf("\t%s: 0x%04x (%d)\n", reg_name, value, value)
+					if value != 0 do fmt.printf("      %s: 0x%04x (%d)\n", reg_name, value, value)
+				}
+				
+				if flags_differ(sim.flags, FlagsRegister{}) {
+					fmt.printf("   flags: ")
+					sim_print_flags(&sim, sim.flags)
+					fmt.println()
 				}
 				cleanup_sim(&sim)
 				if !ok {

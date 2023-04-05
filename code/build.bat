@@ -40,5 +40,7 @@ rem Test exec
 ..\build\sim8086.exe -exec listing_0043_immediate_movs
 ..\build\sim8086.exe -exec listing_0044_register_movs
 ..\build\sim8086.exe -exec listing_0045_challenge_register_movs
+..\build\sim8086.exe -exec listing_0046_add_sub_cmp
+..\build\sim8086.exe -exec listing_0047_challenge_flags
 
 popd
