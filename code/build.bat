@@ -14,6 +14,8 @@ pushd C:\development\performance-aware\sim8086\data
 
 rem Test disasm
 
+rem echo === DISASM TEST ===
+
 rem ..\build\sim8086.exe -disasm listing_0037_single_register_mov  > output_0037_single_register_mov.asm
 rem ..\build\sim8086.exe -disasm listing_0038_many_register_mov    > output_0038_many_register_mov.asm
 rem ..\build\sim8086.exe -disasm listing_0039_more_movs            > output_0039_more_movs.asm
@@ -35,12 +37,17 @@ rem fc output_0040_challenge_movs       listing_0040_challenge_movs
 rem fc output_0041_add_sub_cmp_jnz      listing_0041_add_sub_cmp_jnz
 rem fc output_0042_completionist_decode listing_0042_completionist_decode
 
+rem echo === END DISASM TEST ===
+
 rem Test exec
 
-..\build\sim8086.exe -exec listing_0043_immediate_movs
-..\build\sim8086.exe -exec listing_0044_register_movs
-..\build\sim8086.exe -exec listing_0045_challenge_register_movs
-..\build\sim8086.exe -exec listing_0046_add_sub_cmp
-..\build\sim8086.exe -exec listing_0047_challenge_flags
+rem ..\build\sim8086.exe -exec listing_0043_immediate_movs
+rem ..\build\sim8086.exe -exec listing_0044_register_movs
+rem ..\build\sim8086.exe -exec listing_0045_challenge_register_movs
+rem ..\build\sim8086.exe -exec listing_0046_add_sub_cmp
+rem ..\build\sim8086.exe -exec listing_0047_challenge_flags
+..\build\sim8086.exe -exec listing_0048_ip_register
+..\build\sim8086.exe -exec listing_0049_conditional_jumps
+..\build\sim8086.exe -exec listing_0050_challenge_jumps
 
 popd

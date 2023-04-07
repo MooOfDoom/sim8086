@@ -48,9 +48,7 @@ Immediate :: struct {
 }
 
 Label :: struct {
-	index:             int,
-	instruction_index: int,
-	address:           int,
+	offset: i16,
 }
 
 Intersegment :: struct {
@@ -121,6 +119,12 @@ make_immediate :: proc(value: i16, w: byte) -> Immediate {
 	}
 }
 
+make_label :: proc(offset: i16) -> Label {
+	return Label {
+		offset = offset,
+	}
+}
+
 make_intersegment :: proc(cs: u16, ip: u16) -> Intersegment {
 	return Intersegment {
 		cs = cs,
@@ -164,7 +168,7 @@ print_operand :: proc(fd: os.Handle, operand: Operand) {
 			fmt.fprint(fd, o.value)
 		
 		case Label:
-			fmt.fprintf(fd, "label_%d", o.index)
+			fmt.fprintf(fd, "$%+d", o.offset + 2)
 		
 		case Intersegment:
 			fmt.fprintf(fd, "%d:%d", o.cs, o.ip)
@@ -535,12 +539,9 @@ loops := []Mnemonic {
 }
 
 Decoder :: struct {
-	binary_instructions:   []byte,
-	labels_buf:            [dynamic]Label,
-	instruction_addresses: [dynamic]int,
-	address_to_label:      map[int]^Label,
-	index:                 int,
-	error:                 bool,
+	binary_instructions: []byte,
+	address:             int,
+	error:               bool,
 }
 
 decode_error :: proc(fmt_str: string, args: ..any) {
@@ -548,16 +549,16 @@ decode_error :: proc(fmt_str: string, args: ..any) {
 }
 
 has_bytes :: proc(decoder: ^Decoder) -> bool {
-	return decoder.index < len(decoder.binary_instructions)
+	return decoder.address < len(decoder.binary_instructions)
 }
 
 read :: proc(decoder: ^Decoder, $T: typeid) -> T {
-	if decoder.index + size_of(T) > len(decoder.binary_instructions) {
+	if decoder.address + size_of(T) > len(decoder.binary_instructions) {
 		decoder.error = true
 		return 0
 	}
-	result := (cast(^T)&decoder.binary_instructions[decoder.index])^
-	decoder.index += size_of(T)
+	result := (cast(^T)&decoder.binary_instructions[decoder.address])^
+	decoder.address += size_of(T)
 	return result
 }
 
@@ -570,11 +571,6 @@ read_mod_reg_r_m :: proc(decoder: ^Decoder) -> (mod: Mod, reg: byte, r_m: byte) 
 	reg = (instruction_byte & 0b00111000) >> 3
 	r_m =  instruction_byte & 0b00000111
 	return
-}
-
-cleanup :: proc(decoder: ^Decoder) {
-	delete(decoder.instruction_addresses)
-	delete(decoder.address_to_label)
 }
 
 NO_SIZE :: 2
@@ -593,42 +589,6 @@ effective_address_calculation :: proc(decoder: ^Decoder, mod: Mod, r_m: byte, w:
 	}
 	
 	return make_memory(r_m, w, disp, direct_address, segment, w != NO_SIZE)
-}
-
-update_labels :: proc(decoder: ^Decoder, instruction_index: int) {
-	append(&decoder.instruction_addresses, decoder.index)
-	if label, ok := decoder.address_to_label[decoder.index]; ok {
-		label.instruction_index = instruction_index
-	}
-}
-
-get_or_create_label :: proc(decoder: ^Decoder, disp: int, mnemonic: string) -> ^Label {
-	target_address := decoder.index + disp
-	label, ok := decoder.address_to_label[target_address]
-	if !ok {
-		append(&decoder.labels_buf, Label{
-			index             = len(decoder.labels_buf),
-			instruction_index = -1,
-			address           = target_address,
-		})
-		label = &decoder.labels_buf[len(decoder.labels_buf) - 1]
-		decoder.address_to_label[target_address] = label
-		if target_address < decoder.index {
-			index := len(decoder.instruction_addresses) - 1
-			address := decoder.instruction_addresses[index]
-			for index > 0 && address > target_address {
-				index -= 1
-				address = decoder.instruction_addresses[index]
-			}
-			if address != target_address {
-				decoder.error = true
-				decode_error("Cannot find location for short label for %s (disp=%d, address=%d)", mnemonic, disp, target_address)
-			}
-			
-			label.instruction_index = index
-		}
-	}
-	return label
 }
 
 // MOV
@@ -837,21 +797,18 @@ is_segment :: proc(opcode: byte) -> bool {
 	return opcode & 0b11100111 == 0b00100110
 }
 
-disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction, labels: []Label, success: bool) {
-	output_buf: [dynamic]Instruction
-	decoder := &Decoder{binary_instructions = binary_instructions}
-	defer cleanup(decoder)
+decode_instruction :: proc(decoder: ^Decoder) -> (instruction: Instruction, success: bool) {
+	success = false
 	
 	lock := false
 	segment: i8 = -1
 	
 	for !decoder.error && has_bytes(decoder) {
-		update_labels(decoder, len(output_buf))
-		address := decoder.index
+		address := decoder.address
 		opcode  := read(decoder, byte)
 		d       := (opcode & 0b00000010) >> 1
 		w       :=  opcode & 0b00000001
-		
+	
 		if is_mov_reg_r_m(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
 			if decoder.error {
@@ -883,7 +840,7 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				}
 			}
 			
-			append(&output_buf, make_instruction(address, .MOV, dest, source, lock))
+			instruction = make_instruction(address, .MOV, dest, source, lock)
 		} else if is_mov_r_m_imm(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
 			if decoder.error {
@@ -918,7 +875,7 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				break
 			}
 			
-			append(&output_buf, make_instruction(address, .MOV, dest, make_immediate(imm, w), lock))
+			instruction = make_instruction(address, .MOV, dest, make_immediate(imm, w), lock)
 		} else if is_mov_reg_imm(opcode) {
 			w    = (opcode & 0b0001000) >> 3
 			reg :=  opcode & 0b0000111
@@ -933,7 +890,7 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				break
 			}
 			
-			append(&output_buf, make_instruction(address, .MOV, make_register(reg, w), make_immediate(imm, w), lock))
+			instruction = make_instruction(address, .MOV, make_register(reg, w), make_immediate(imm, w), lock)
 		} else if is_mov_acc_mem(opcode) {
 			addr := read(decoder, u16)
 			if decoder.error {
@@ -944,9 +901,9 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 			acc := make_register(AX, w)
 			mem := make_memory_direct(addr, w, segment)
 			if d == 0 {
-				append(&output_buf, make_instruction(address, .MOV, acc, mem, lock))
+				instruction = make_instruction(address, .MOV, acc, mem, lock)
 			} else {
-				append(&output_buf, make_instruction(address, .MOV, mem, acc, lock))
+				instruction = make_instruction(address, .MOV, mem, acc, lock)
 			}
 		} else if is_mov_r_m_seg(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
@@ -985,7 +942,7 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				}
 			}
 			
-			append(&output_buf, make_instruction(address, .MOV, dest, source, lock))
+			instruction = make_instruction(address, .MOV, dest, source, lock)
 		} else if is_all_ones(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
 			if decoder.error {
@@ -1012,13 +969,13 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 			
 			if type == 0b011 || type == 0b101 { // Intersegment call or jmp
 				// TODO: Support call far and jmp far
-				// append(&output_buf, fmt.aprintf("%s far %s", all_ones[type], source))
+				// instruction =  fmt.aprintf("%s far %s", all_ones[type], source))
 				if mem, ok := source.(Memory); ok {
 					mem.explicit_size = false
 				}
-				append(&output_buf, make_instruction(address, all_ones[type], nil, source, lock))
+				instruction = make_instruction(address, all_ones[type], nil, source, lock)
 			} else {
-				append(&output_buf, make_instruction(address, all_ones[type], nil, source, lock))
+				instruction = make_instruction(address, all_ones[type], nil, source, lock)
 			}
 		} else if is_pop_r_m(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
@@ -1043,17 +1000,17 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				}
 			}
 			
-			append(&output_buf, make_instruction(address, .POP, nil, source, lock))
+			instruction = make_instruction(address, .POP, nil, source, lock)
 		} else if is_push_pop_reg(opcode) {
 			type := (opcode & 0b00001000) >> 3
 			reg  :=  opcode & 0b00000111
 			
-			append(&output_buf, make_instruction(address, type == 1 ? .POP : .PUSH, nil, make_register(reg, 1), lock))
+			instruction = make_instruction(address, type == 1 ? .POP : .PUSH, nil, make_register(reg, 1), lock)
 		} else if is_push_pop_seg(opcode) {
 			type :=  opcode & 0b00000001
 			seg  := (opcode & 0b00011000) >> 3
 			
-			append(&output_buf, make_instruction(address, type == 1 ? .POP : .PUSH, nil, make_segment(seg), lock))
+			instruction = make_instruction(address, type == 1 ? .POP : .PUSH, nil, make_segment(seg), lock)
 		} else if is_xchg_reg_r_m(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
 			if decoder.error {
@@ -1071,11 +1028,11 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				}
 			}
 			
-			append(&output_buf, make_instruction(address, .XCHG, make_register(reg, w), source, lock))
+			instruction = make_instruction(address, .XCHG, make_register(reg, w), source, lock)
 		} else if is_xchg_acc_reg(opcode) {
 			reg := opcode & 0b00000111
 			
-			append(&output_buf, make_instruction(address, .XCHG, make_register(AX, 1), make_register(reg, 1), lock))
+			instruction = make_instruction(address, .XCHG, make_register(AX, 1), make_register(reg, 1), lock)
 		} else if is_in_out_fixed(opcode) {
 			imm := i16(read(decoder, u8))
 			if decoder.error {
@@ -1084,18 +1041,18 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 			}
 			
 			if d == 1 {
-				append(&output_buf, make_instruction(address, .OUT, make_immediate(imm, w), make_register(AX, w), lock))
+				instruction = make_instruction(address, .OUT, make_immediate(imm, w), make_register(AX, w), lock)
 			} else {
-				append(&output_buf, make_instruction(address, .IN, make_register(AX, w), make_immediate(imm, w), lock))
+				instruction = make_instruction(address, .IN, make_register(AX, w), make_immediate(imm, w), lock)
 			}
 		} else if is_in_out_variable(opcode) {
 			if d == 1 {
-				append(&output_buf, make_instruction(address, .OUT, make_register(DX, 1), make_register(AX, w), lock))
+				instruction = make_instruction(address, .OUT, make_register(DX, 1), make_register(AX, w), lock)
 			} else {
-				append(&output_buf, make_instruction(address, .IN, make_register(AX, w), make_register(DX, 1), lock))
+				instruction = make_instruction(address, .IN, make_register(AX, w), make_register(DX, 1), lock)
 			}
 		} else if is_xlat(opcode) {
-			append(&output_buf, make_instruction(address, .XLAT, nil, nil, lock))
+			instruction = make_instruction(address, .XLAT, nil, nil, lock)
 		} else if is_lea(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
 			if decoder.error {
@@ -1113,7 +1070,7 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				}
 			}
 			
-			append(&output_buf, make_instruction(address, .LEA, make_register(reg, 1), source, lock))
+			instruction = make_instruction(address, .LEA, make_register(reg, 1), source, lock)
 		} else if is_lds(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
 			if decoder.error {
@@ -1131,7 +1088,7 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				}
 			}
 			
-			append(&output_buf, make_instruction(address, .LDS, make_register(reg, 1), source, lock))
+			instruction = make_instruction(address, .LDS, make_register(reg, 1), source, lock)
 		} else if is_les(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
 			if decoder.error {
@@ -1149,11 +1106,11 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				}
 			}
 			
-			append(&output_buf, make_instruction(address, .LES, make_register(reg, 1), source, lock))
+			instruction = make_instruction(address, .LES, make_register(reg, 1), source, lock)
 		} else if is_flags(opcode) {
 			type := opcode & 0b00000011
 			
-			append(&output_buf, make_instruction(address, flags_ops[type], nil, nil, lock))
+			instruction = make_instruction(address, flags_ops[type], nil, nil, lock)
 		} else if is_arithmetic_op_reg_r_m(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
 			if decoder.error {
@@ -1187,7 +1144,7 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				}
 			}
 			
-			append(&output_buf, make_instruction(address, arithmetic_ops[op], dest, source, lock))
+			instruction = make_instruction(address, arithmetic_ops[op], dest, source, lock)
 		} else if is_arithmetic_op_r_m_imm(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
 			if decoder.error {
@@ -1220,7 +1177,7 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				break
 			}
 			
-			append(&output_buf, make_instruction(address, arithmetic_ops[reg], dest, make_immediate(imm, w), lock))
+			instruction = make_instruction(address, arithmetic_ops[reg], dest, make_immediate(imm, w), lock)
 		} else if is_arithmetic_op_acc_imm(opcode) {
 			op := (opcode & 0b00111000) >> 3
 			
@@ -1235,7 +1192,7 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				break
 			}
 			
-			append(&output_buf, make_instruction(address, arithmetic_ops[op], make_register(AX, w), make_immediate(imm, w), lock))
+			instruction = make_instruction(address, arithmetic_ops[op], make_register(AX, w), make_immediate(imm, w), lock)
 		} else if is_inc_dec_r_m(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
 			if decoder.error {
@@ -1259,16 +1216,16 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				}
 			}
 			
-			append(&output_buf, make_instruction(address, reg == 0b000 ? .INC : .DEC, dest, nil, lock))
+			instruction = make_instruction(address, reg == 0b000 ? .INC : .DEC, dest, nil, lock)
 		} else if is_inc_dec_reg(opcode) {
 			is_dec := (opcode & 0b00001000) >> 3
 			reg    :=  opcode & 0b00000111
 			
-			append(&output_buf, make_instruction(address, is_dec == 1 ? .DEC : .INC, make_register(reg, 1), nil, lock))
+			instruction = make_instruction(address, is_dec == 1 ? .DEC : .INC, make_register(reg, 1), nil, lock)
 		} else if is_adjust_a_s(opcode) {
 			type := (opcode & 0b00011000) >> 3
 			
-			append(&output_buf, make_instruction(address, adjust_a_s_ops[type], nil, nil, lock))
+			instruction = make_instruction(address, adjust_a_s_ops[type], nil, nil, lock)
 		} else if is_adjust_m_d(opcode) {
 			is_aad := opcode & 0b00000001
 			
@@ -1279,11 +1236,11 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				break
 			}
 			
-			append(&output_buf, make_instruction(address, is_aad == 1 ? .AAD : .AAM, nil, nil, lock))
+			instruction = make_instruction(address, is_aad == 1 ? .AAD : .AAM, nil, nil, lock)
 		} else if is_convert(opcode) {
 			is_cwd := opcode & 0b00000001
 			
-			append(&output_buf, make_instruction(address, is_cwd == 1 ? .CWD : .CBW, nil, nil, lock))
+			instruction = make_instruction(address, is_cwd == 1 ? .CWD : .CBW, nil, nil, lock)
 		} else if is_unary(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
 			if decoder.error {
@@ -1319,9 +1276,9 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 					break
 				}
 				
-				append(&output_buf, make_instruction(address, .TEST, dest, make_immediate(imm, w), lock))
+				instruction = make_instruction(address, .TEST, dest, make_immediate(imm, w), lock)
 			} else {
-				append(&output_buf, make_instruction(address, unary_ops[reg], dest, nil, lock))
+				instruction = make_instruction(address, unary_ops[reg], dest, nil, lock)
 			}
 		} else if is_logic(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
@@ -1347,8 +1304,8 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 			}
 			
 			v := d
-			append(&output_buf, make_instruction(address, logic_ops[reg], dest,
-			                                     v == 1 ? Operand(make_register(CL, 0)) : Operand(make_immediate(1, 0)), lock))
+			instruction = make_instruction(address, logic_ops[reg], dest,
+			                                     v == 1 ? Operand(make_register(CL, 0)) : Operand(make_immediate(1, 0)), lock)
 		} else if is_test_reg_r_m(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
 			if decoder.error {
@@ -1366,7 +1323,7 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				}
 			}
 			
-			append(&output_buf, make_instruction(address, .TEST, dest, make_register(reg, w), lock))
+			instruction = make_instruction(address, .TEST, dest, make_register(reg, w), lock)
 		} else if is_test_acc_imm(opcode) {
 			imm: i16
 			if w == 1 {
@@ -1379,7 +1336,7 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				break
 			}
 			
-			append(&output_buf, make_instruction(address, .TEST, make_register(AX, w), make_immediate(imm, w), lock))
+			instruction = make_instruction(address, .TEST, make_register(AX, w), make_immediate(imm, w), lock)
 		} else if is_rep(opcode) {
 			z := w
 			string_op := read(decoder, byte)
@@ -1397,34 +1354,29 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 			}
 			
 			// TODO: Support z != 1
-			append(&output_buf, make_instruction(address, string_ops[type], nil, nil, lock, true, w + 1))
+			instruction = make_instruction(address, string_ops[type], nil, nil, lock, true, w + 1)
 		} else if is_string_op(opcode) {
 			type := (opcode & 0b00001110) >> 1
 			// NOTE: Types that are not string ops have been filtered out by this point.
 			
-			append(&output_buf, make_instruction(address, string_ops[type], nil, nil, lock, false, w + 1))
+			instruction = make_instruction(address, string_ops[type], nil, nil, lock, false, w + 1)
 		} else if is_call_jmp_direct(opcode) {
 			type := opcode & 0b000000011
 			mnemonic: Mnemonic = type == 0b00 ? .CALL : .JMP
 			
 			if type != 0b10 {
-				disp: int
+				disp: i16
 				if type == 0b11 {
-					disp = int(read(decoder, i8))
+					disp = i16(read(decoder, i8))
 				} else {
-					disp = int(read(decoder, i16))
+					disp = read(decoder, i16)
 				}
 				if decoder.error {
 					decode_error("Missing IP-inc for %s\n", mnemonic_strings[mnemonic])
 					break
 				}
 				
-				label := get_or_create_label(decoder, disp, mnemonic_strings[mnemonic])
-				if decoder.error {
-					break
-				}
-				
-				append(&output_buf, make_instruction(address, mnemonic, label^, nil, lock))
+				instruction = make_instruction(address, mnemonic, make_label(disp), nil, lock)
 			} else {
 				ip := read(decoder, u16)
 				cs := read(decoder, u16)
@@ -1433,7 +1385,7 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 					break
 				}
 				
-				append(&output_buf, make_instruction(address, .JMP, make_intersegment(cs, ip), nil, lock))
+				instruction = make_instruction(address, .JMP, make_intersegment(cs, ip), nil, lock)
 			}
 		} else if is_call_direct_interseg(opcode) {
 			ip := read(decoder, u16)
@@ -1443,7 +1395,7 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				break
 			}
 			
-			append(&output_buf, make_instruction(address, .CALL, make_intersegment(cs, ip), nil, lock))
+			instruction = make_instruction(address, .CALL, make_intersegment(cs, ip), nil, lock)
 		} else if is_ret(opcode) {
 			// TODO: Within segment vs intersegment?
 			if w == 0 {
@@ -1453,14 +1405,14 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 					break
 				}
 				
-				append(&output_buf, make_instruction(address, .RET, make_immediate(imm, 1), nil, lock))
+				instruction = make_instruction(address, .RET, make_immediate(imm, 1), nil, lock)
 			} else {
-				append(&output_buf, make_instruction(address, .RET, nil, nil, lock))
+				instruction = make_instruction(address, .RET, nil, nil, lock)
 			}
 		} else if is_interrupt(opcode) {
 			type := opcode & 0b00000011
 			if type == 0b00 {
-				append(&output_buf, make_instruction(address, .INT, make_immediate(3, 0), nil, lock))
+				instruction = make_instruction(address, .INT, make_immediate(3, 0), nil, lock)
 			} else if type == 0b01 {
 				imm := i16(read(decoder, byte))
 				if decoder.error {
@@ -1468,30 +1420,30 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 					break
 				}
 				
-				append(&output_buf, make_instruction(address, .INT, make_immediate(imm, 0), nil, lock))
+				instruction = make_instruction(address, .INT, make_immediate(imm, 0), nil, lock)
 			} else if type == 0b10 {
-				append(&output_buf, make_instruction(address, .INTO, nil, nil, lock))
+				instruction = make_instruction(address, .INTO, nil, nil, lock)
 			} else{
-				append(&output_buf, make_instruction(address, .IRET, nil, nil, lock))
+				instruction = make_instruction(address, .IRET, nil, nil, lock)
 			}
 		} else if is_clc(opcode) {
-			append(&output_buf, make_instruction(address, .CLC, nil, nil, lock))
+			instruction = make_instruction(address, .CLC, nil, nil, lock)
 		} else if is_cmc(opcode) {
-			append(&output_buf, make_instruction(address, .CMC, nil, nil, lock))
+			instruction = make_instruction(address, .CMC, nil, nil, lock)
 		} else if is_stc(opcode) {
-			append(&output_buf, make_instruction(address, .STC, nil, nil, lock))
+			instruction = make_instruction(address, .STC, nil, nil, lock)
 		} else if is_cld(opcode) {
-			append(&output_buf, make_instruction(address, .CLD, nil, nil, lock))
+			instruction = make_instruction(address, .CLD, nil, nil, lock)
 		} else if is_std(opcode) {
-			append(&output_buf, make_instruction(address, .STD, nil, nil, lock))
+			instruction = make_instruction(address, .STD, nil, nil, lock)
 		} else if is_cli(opcode) {
-			append(&output_buf, make_instruction(address, .CLI, nil, nil, lock))
+			instruction = make_instruction(address, .CLI, nil, nil, lock)
 		} else if is_sti(opcode) {
-			append(&output_buf, make_instruction(address, .STI, nil, nil, lock))
+			instruction = make_instruction(address, .STI, nil, nil, lock)
 		} else if is_hlt(opcode) {
-			append(&output_buf, make_instruction(address, .HLT, nil, nil, lock))
+			instruction = make_instruction(address, .HLT, nil, nil, lock)
 		} else if is_wait(opcode) {
-			append(&output_buf, make_instruction(address, .WAIT, nil, nil, lock))
+			instruction = make_instruction(address, .WAIT, nil, nil, lock)
 		} else if is_esc(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
 			if decoder.error {
@@ -1510,7 +1462,7 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				}
 			}
 			
-			append(&output_buf, make_instruction(address, .ESC, make_immediate(i16(code), 0), source, lock))
+			instruction = make_instruction(address, .ESC, make_immediate(i16(code), 0), source, lock)
 		} else if is_conditional_jmp(opcode) || is_loop_or_jcxz(opcode) {
 			mnemonic: Mnemonic
 			if is_conditional_jmp(opcode) {
@@ -1521,18 +1473,13 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 				mnemonic = loops[type]
 			}
 			
-			disp := read(decoder, i8)
+			disp := i16(read(decoder, i8))
 			if decoder.error {
 				decode_error("Missing short label for %s\n", mnemonic_strings[mnemonic])
 				break
 			}
 			
-			label := get_or_create_label(decoder, int(disp), mnemonic_strings[mnemonic])
-			if decoder.error {
-				break
-			}
-			
-			append(&output_buf, make_instruction(address, mnemonic, label^, nil, lock))
+			instruction = make_instruction(address, mnemonic, make_label(disp), nil, lock)
 		} else if is_lock(opcode) {
 			lock = true
 			continue
@@ -1545,16 +1492,24 @@ disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction,
 			break
 		}
 		
-		lock    = false
-		segment = -1
+		success = true
+		break
 	}
 	
-	// decode_error("%v\n", output_buf)
+	return
+}
+
+disasm8086 :: proc(binary_instructions: []byte) -> (instructions: []Instruction, success: bool) {
+	output_buf: [dynamic]Instruction
+	decoder := &Decoder{binary_instructions = binary_instructions}
+	
+	for !decoder.error && has_bytes(decoder) {
+		if instruction, ok := decode_instruction(decoder); ok {
+			append(&output_buf, instruction)
+		}
+	}
+	
 	instructions = output_buf[:]
-	labels = decoder.labels_buf[:]
-	slice.sort_by(labels, proc(i, j: Label) -> bool {
-		return i.instruction_index < j.instruction_index
-	})
 	success = !decoder.error
 	return
 }

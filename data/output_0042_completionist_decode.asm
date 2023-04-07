@@ -283,27 +283,26 @@ jmp word [4395]
 ret -7
 ret 500
 ret
-label_0:
-je label_0
-jl label_0
-jle label_0
-jb label_0
-jbe label_0
-jp label_0
-jo label_0
-js label_0
-jne label_0
-jnl label_0
-jg label_0
-jnb label_0
-ja label_0
-jnp label_0
-jno label_0
-jns label_0
-loop label_0
-loopz label_0
-loopnz label_0
-jcxz label_0
+je $+0
+jl $-2
+jle $-4
+jb $-6
+jbe $-8
+jp $-10
+jo $-12
+js $-14
+jne $-16
+jnl $-18
+jg $-20
+jnb $-22
+ja $-24
+jnp $-26
+jno $-28
+jns $-30
+loop $-32
+loopz $-34
+loopnz $-36
+jcxz $-38
 int 13
 int 3
 into

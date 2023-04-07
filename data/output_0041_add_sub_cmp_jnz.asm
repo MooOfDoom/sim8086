@@ -72,30 +72,27 @@ cmp al, ah
 cmp ax, 1000
 cmp al, -30
 cmp al, 9
-label_1:
-jne label_0
-jne label_1
-label_0:
-jne label_1
-jne label_0
-label_2:
-je label_2
-jl label_2
-jle label_2
-jb label_2
-jbe label_2
-jp label_2
-jo label_2
-js label_2
-jne label_2
-jnl label_2
-jg label_2
-jnb label_2
-ja label_2
-jnp label_2
-jno label_2
-jns label_2
-loop label_2
-loopz label_2
-loopnz label_2
-jcxz label_2
+jne $+4
+jne $-2
+jne $-4
+jne $-2
+je $+0
+jl $-2
+jle $-4
+jb $-6
+jbe $-8
+jp $-10
+jo $-12
+js $-14
+jne $-16
+jnl $-18
+jg $-20
+jnb $-22
+ja $-24
+jnp $-26
+jno $-28
+jns $-30
+loop $-32
+loopz $-34
+loopnz $-36
+jcxz $-38
