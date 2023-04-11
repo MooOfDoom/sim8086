@@ -132,7 +132,49 @@ write_register :: proc(sim: ^Simulator, reg: Register, value: u16) {
 		sim.registers[reg.index] = new_value
 		wide_name = reg_names[reg.index + 8]
 	}
-	sim_print(sim, " %s:0x%x->0x%x", wide_name, old_value, new_value)
+	if old_value != new_value do sim_print(sim, " %s:0x%x->0x%x", wide_name, old_value, new_value)
+}
+
+logical_address_from_memory_operand :: proc(sim: ^Simulator, mem: Memory) -> u16 {
+	logical_address := u16(mem.displacement)
+	if !mem.direct_address {
+		switch mem.formula {
+			case .BX_SI: logical_address += sim.registers[BX] + sim.registers[SI]
+			case .BX_DI: logical_address += sim.registers[BX] + sim.registers[DI]
+			case .BP_SI: logical_address += sim.registers[BP] + sim.registers[SI]
+			case .BP_DI: logical_address += sim.registers[BP] + sim.registers[DI]
+			case .SI:    logical_address += sim.registers[SI]
+			case .DI:    logical_address += sim.registers[DI]
+			case .BP:    logical_address += sim.registers[BP]
+			case .BX:    logical_address += sim.registers[BX]
+		}
+	}
+	return logical_address
+}
+
+read_memory :: proc(sim: ^Simulator, mem: Memory) -> u16 {
+	result: u16
+	logical_address := logical_address_from_memory_operand(sim, mem)
+	segment := mem.segment >= 0 ? sim.registers[FIRST_SEGMENT_REG + mem.segment] : sim.registers[DS]
+	physical_address := physical_address_from_logical(segment, logical_address)
+	if mem.size == 1 {
+		result = u16(sim.memory[physical_address])
+	} else {
+		result = u16(sim.memory[physical_address]) | (u16(sim.memory[physical_address + 1]) << 8)
+	}
+	return result
+}
+
+write_memory :: proc(sim: ^Simulator, mem: Memory, value: u16) {
+	logical_address := logical_address_from_memory_operand(sim, mem)
+	segment := mem.segment >= 0 ? sim.registers[FIRST_SEGMENT_REG + mem.segment] : sim.registers[DS]
+	physical_address := physical_address_from_logical(segment, logical_address)
+	if mem.size == 1 {
+		sim.memory[physical_address] = u8(value)
+	} else {
+		sim.memory[physical_address] = u8(value & 0xff)
+		sim.memory[physical_address + 1] = u8(value >> 8)
+	}
 }
 
 sim_print_flags :: proc(sim: ^Simulator, flags: u16) {
@@ -195,14 +237,12 @@ execute_instruction :: proc(sim: ^Simulator) -> bool {
 						value = read_register(sim, s)
 					}
 					case Memory: {
-						sim_print(sim, "TODO: Not implemented")
+						value = read_memory(sim, s)
 					}
 					case Immediate: {
 						value = u16(s.value)
 					}
-					case Label:
-					case Intersegment:
-					case: {
+					case Label, Intersegment: {
 						fmt.fprintf(os.stderr, "Invalid mov instruction\n")
 					}
 				}
@@ -212,12 +252,9 @@ execute_instruction :: proc(sim: ^Simulator) -> bool {
 						write_register(sim, d, value)
 					}
 					case Memory: {
-						sim_print(sim, "TODO: Not implemented")
+						write_memory(sim, d, value)
 					}
-					case Immediate:
-					case Label:
-					case Intersegment:
-					case: {
+					case Immediate, Label, Intersegment: {
 						fmt.fprintf(os.stderr, "Invalid mov instruction\n")
 					}
 				}
@@ -243,43 +280,44 @@ execute_instruction :: proc(sim: ^Simulator) -> bool {
 						value = read_register(sim, s)
 					}
 					case Memory: {
-						sim_print(sim, "TODO: Not implemented")
+						value = read_memory(sim, s)
 					}
 					case Immediate: {
 						value = u16(s.value)
 					}
-					case Label:
-					case Intersegment:
-					case: {
-						fmt.fprintf(os.stderr, "Invalid mov instruction\n")
+					case Label, Intersegment: {
+						fmt.fprintf(os.stderr, "Invalid add instruction\n")
 					}
 				}
 				dest := instruction.dest
+				old_value: u16
+				result:    u32
+				size:      u8
 				switch d in dest {
 					case Register: {
-						old_value := read_register(sim, d)
-						result := u32(old_value) + u32(value)
+						old_value = read_register(sim, d)
+						result    = u32(old_value) + u32(value)
+						size      = d.size
 						write_register(sim, d, u16(result))
-						
-						// Update flags
-						set_flag(sim, CF, result & 0x10000 != 0)
-						set_flag(sim, PF, compute_pf(result))
-						set_flag(sim, AF, ((value ~ old_value ~ u16(result)) & 0x10) != 0)
-						set_flag(sim, ZF, u16(result) == 0)
-						set_flag(sim, SF, d.size == 2 ? (result & 0x8000) != 0 : (result & 0x80) != 0)
-						set_flag(sim, OF, ((i16(result) < 0 && i16(old_value) > 0 && i16(value) > 0) ||
-						                   (i16(result) > 0 && i16(old_value) < 0 && i16(value) < 0)))
 					}
 					case Memory: {
-						sim_print(sim, "TODO: Not implemented")
+						old_value = read_memory(sim, d)
+						result    = u32(old_value) + u32(value)
+						size      = d.size
+						write_memory(sim, d, u16(result))
 					}
-					case Immediate:
-					case Label:
-					case Intersegment:
-					case: {
-						fmt.fprintf(os.stderr, "Invalid mov instruction\n")
+					case Immediate, Label, Intersegment: {
+						fmt.fprintf(os.stderr, "Invalid add instruction\n")
 					}
 				}
+				// Update flags
+				set_flag(sim, CF, result & 0x10000 != 0)
+				set_flag(sim, PF, compute_pf(result))
+				set_flag(sim, AF, ((value ~ old_value ~ u16(result)) & 0x10) != 0)
+				set_flag(sim, ZF, u16(result) == 0)
+				set_flag(sim, SF, size == 2 ? (result & 0x8000) != 0 : (result & 0x80) != 0)
+				set_flag(sim, OF, ((i16(result) < 0 && i16(old_value) > 0 && i16(value) > 0) ||
+				                   (i16(result) > 0 && i16(old_value) < 0 && i16(value) < 0)))
 			}
 			case .ADC:
 			case .INC:
@@ -293,43 +331,44 @@ execute_instruction :: proc(sim: ^Simulator) -> bool {
 						value = read_register(sim, s)
 					}
 					case Memory: {
-						sim_print(sim, "TODO: Not implemented")
+						value = read_memory(sim, s)
 					}
 					case Immediate: {
 						value = u16(s.value)
 					}
-					case Label:
-					case Intersegment:
-					case: {
-						fmt.fprintf(os.stderr, "Invalid mov instruction\n")
+					case Label, Intersegment: {
+						fmt.fprintf(os.stderr, "Invalid cmp or sub instruction\n")
 					}
 				}
 				dest := instruction.dest
+				old_value: u16
+				result:    i32
+				size:      u8
 				switch d in dest {
 					case Register: {
-						old_value := read_register(sim, d)
-						result := i32(old_value) - i32(value)
+						old_value = read_register(sim, d)
+						result    = i32(old_value) - i32(value)
+						size      = d.size
 						if instruction.mnemonic == .SUB do write_register(sim, d, u16(result))
-						
-						// Update flags
-						set_flag(sim, CF, i32(value) > i32(old_value))
-						set_flag(sim, PF, compute_pf(u32(result)))
-						set_flag(sim, AF, (value & 0b1111) > (old_value & 0b1111))
-						set_flag(sim, ZF, u16(result) == 0)
-						set_flag(sim, SF, d.size == 2 ? (result & 0x8000) != 0 : (result & 0x80) != 0)
-						set_flag(sim, OF, ((i16(result) < 0 && i16(old_value) > 0 && i16(value) < 0) ||
-						                   (i16(result) > 0 && i16(old_value) < 0 && i16(value) > 0)))
 					}
 					case Memory: {
-						sim_print(sim, "TODO: Not implemented")
+						old_value = read_memory(sim, d)
+						result    = i32(old_value) - i32(value)
+						size      = d.size
+						if instruction.mnemonic == .SUB do write_memory(sim, d, u16(result))
 					}
-					case Immediate:
-					case Label:
-					case Intersegment:
-					case: {
-						fmt.fprintf(os.stderr, "Invalid mov instruction\n")
+					case Immediate, Label, Intersegment: {
+						fmt.fprintf(os.stderr, "Invalid cmp or sub instruction\n")
 					}
 				}
+				// Update flags
+				set_flag(sim, CF, i32(value) > i32(old_value))
+				set_flag(sim, PF, compute_pf(u32(result)))
+				set_flag(sim, AF, (value & 0b1111) > (old_value & 0b1111))
+				set_flag(sim, ZF, u16(result) == 0)
+				set_flag(sim, SF, size == 2 ? (result & 0x8000) != 0 : (result & 0x80) != 0)
+				set_flag(sim, OF, ((i16(result) < 0 && i16(old_value) > 0 && i16(value) < 0) ||
+				                   (i16(result) > 0 && i16(old_value) < 0 && i16(value) > 0)))
 			}
 			case .SBB:
 			case .DEC:
@@ -363,8 +402,11 @@ execute_instruction :: proc(sim: ^Simulator) -> bool {
 			case .LODS:
 			case .STOS:
 			case .CALL:
+			case .CALL_FAR:
 			case .JMP:
+			case .JMP_FAR:
 			case .RET:
+			case .RETF:
 			case .JE: {
 				if dest, ok := instruction.dest.(Label); ok {
 					if sim.registers[FLAGS] & ZF != 0 {
@@ -555,6 +597,7 @@ execute_instruction :: proc(sim: ^Simulator) -> bool {
 				}
 			}
 			case .INT:
+			case .INT3:
 			case .INTO:
 			case .IRET:
 			case .CLC:

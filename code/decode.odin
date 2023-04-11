@@ -33,9 +33,20 @@ Register :: struct {
 	segment: bool,
 }
 
+Mem_Formula :: enum {
+	BX_SI,
+	BX_DI,
+	BP_SI,
+	BP_DI,
+	SI,
+	DI,
+	BP,
+	BX,
+}
+
 Memory :: struct {
 	size:           u8,
-	formula:        u8,
+	formula:        Mem_Formula,
 	displacement:   i16,
 	direct_address: bool,
 	segment:        i8,
@@ -93,7 +104,7 @@ make_memory :: proc(r_m: byte, w: byte, displacement: i16, direct_address: bool,
                     segment: i8 = -1, explicit_size: bool = false) -> Memory {
 	return Memory {
 		size           = w + 1,
-		formula        = r_m,
+		formula        = Mem_Formula(r_m),
 		displacement   = displacement,
 		direct_address = direct_address,
 		segment        = segment,
@@ -104,7 +115,7 @@ make_memory :: proc(r_m: byte, w: byte, displacement: i16, direct_address: bool,
 make_memory_direct :: proc(address: u16, w: byte, segment: i8 = -1) -> Memory {
 	return Memory {
 		size           = w + 1,
-		formula        = 0b110,
+		formula        = Mem_Formula(0b110),
 		displacement   = i16(address),
 		direct_address = true,
 		segment        = segment,
@@ -250,8 +261,11 @@ Mnemonic :: enum {
 	LODS,
 	STOS,
 	CALL,
+	CALL_FAR,
 	JMP,
+	JMP_FAR,
 	RET,
+	RETF,
 	JE,
 	JL,
 	JLE,
@@ -273,6 +287,7 @@ Mnemonic :: enum {
 	LOOPNZ,
 	JCXZ,
 	INT,
+	INT3,
 	INTO,
 	IRET,
 	CLC,
@@ -342,8 +357,11 @@ mnemonic_strings := []string {
 	"lods",
 	"stos",
 	"call",
+	"call far",
 	"jmp",
+	"jmp far",
 	"ret",
+	"retf",
 	"je",
 	"jl",
 	"jle",
@@ -365,6 +383,7 @@ mnemonic_strings := []string {
 	"loopnz",
 	"jcxz",
 	"int",
+	"int3",
 	"into",
 	"iret",
 	"clc",
@@ -448,9 +467,9 @@ all_ones := []Mnemonic {
 	.INC,
 	.DEC,
 	.CALL,
-	.CALL,
+	.CALL_FAR,
 	.JMP,
-	.JMP,
+	.JMP_FAR,
 	.PUSH,
 }
 
@@ -967,16 +986,12 @@ decode_instruction :: proc(decoder: ^Decoder) -> (instruction: Instruction, succ
 				}
 			}
 			
-			if type == 0b011 || type == 0b101 { // Intersegment call or jmp
-				// TODO: Support call far and jmp far
-				// instruction =  fmt.aprintf("%s far %s", all_ones[type], source))
-				if mem, ok := source.(Memory); ok {
+			if type == 0b010 || type == 0b011 || type == 0b100 || type == 0b101 {
+				if mem, ok := &source.(Memory); ok {
 					mem.explicit_size = false
 				}
-				instruction = make_instruction(address, all_ones[type], nil, source, lock)
-			} else {
-				instruction = make_instruction(address, all_ones[type], nil, source, lock)
 			}
+			instruction = make_instruction(address, all_ones[type], nil, source, lock)
 		} else if is_pop_r_m(opcode) {
 			mod, reg, r_m := read_mod_reg_r_m(decoder)
 			if decoder.error {
@@ -1376,7 +1391,7 @@ decode_instruction :: proc(decoder: ^Decoder) -> (instruction: Instruction, succ
 					break
 				}
 				
-				instruction = make_instruction(address, mnemonic, make_label(disp), nil, lock)
+				instruction = make_instruction(address, mnemonic, make_immediate(i16(decoder.address) + disp, 1), nil, lock)
 			} else {
 				ip := read(decoder, u16)
 				cs := read(decoder, u16)
@@ -1397,22 +1412,23 @@ decode_instruction :: proc(decoder: ^Decoder) -> (instruction: Instruction, succ
 			
 			instruction = make_instruction(address, .CALL, make_intersegment(cs, ip), nil, lock)
 		} else if is_ret(opcode) {
-			// TODO: Within segment vs intersegment?
+			intersegment := (opcode & 0b00001000) >> 3
+			mnemonic : Mnemonic = intersegment == 1 ? .RETF : .RET
 			if w == 0 {
 				imm := read(decoder, i16)
 				if decoder.error {
-					decode_error("Missing immediate for ret adding immediate to sp\n")
+					decode_error("Missing immediate for %s adding immediate to sp\n", mnemonic_strings[mnemonic])
 					break
 				}
 				
-				instruction = make_instruction(address, .RET, make_immediate(imm, 1), nil, lock)
+				instruction = make_instruction(address, mnemonic, make_immediate(imm, 1), nil, lock)
 			} else {
-				instruction = make_instruction(address, .RET, nil, nil, lock)
+				instruction = make_instruction(address, mnemonic, nil, nil, lock)
 			}
 		} else if is_interrupt(opcode) {
 			type := opcode & 0b00000011
 			if type == 0b00 {
-				instruction = make_instruction(address, .INT, make_immediate(3, 0), nil, lock)
+				instruction = make_instruction(address, .INT3, nil, nil, lock)
 			} else if type == 0b01 {
 				imm := i16(read(decoder, byte))
 				if decoder.error {

@@ -272,14 +272,14 @@ rep scasw
 rep lodsw
 rep stosb
 rep stosw
-call word [-26335]
-call word [bp - 100]
+call [-26335]
+call [bp - 100]
 call sp
 call ax
 jmp ax
 jmp di
-jmp word [12]
-jmp word [4395]
+jmp [12]
+jmp [4395]
 ret -7
 ret 500
 ret
@@ -304,7 +304,7 @@ loopz $-34
 loopnz $-36
 jcxz $-38
 int 13
-int 3
+int3
 into
 iret
 clc
@@ -329,3 +329,17 @@ cmp cx, es:[4384]
 test byte cs:[bp - 39], -17
 sbb word cs:[bx + si - 4332], 10328
 lock not byte cs:[bp + 9905]
+call 123:456
+jmp 789:34
+mov [bx + si + 59], es
+jmp 2620
+call 11804
+retf 17556
+ret 17560
+retf
+ret
+call [bp + si - 58]
+call far [bp + si - 58]
+jmp [di]
+jmp far [di]
+jmp 21862:30600
